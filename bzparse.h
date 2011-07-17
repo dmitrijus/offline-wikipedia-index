@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <expat.h>
 
+#define MAX_TITLE 1024
+
 struct page_info_t {
 	uint64_t offset;
 	uint64_t size;
@@ -17,6 +19,12 @@ struct page_info_t {
 	} state;
 
 	struct bz_part_t *source;
+
+	XML_Char *title;
+	XML_Char *body;
+
+	int title_len;
+	int body_len;
 };
 
 struct bzxml_parser_t {
@@ -37,7 +45,19 @@ void bzxml_init(struct bzxml_parser_t *i);
 void bzxml_destroy(struct bzxml_parser_t *i);
 void bzxml_parse(struct bzxml_parser_t *i, char *data, uint64_t size, int done);
 
-void traverse_pages(struct buffer_t *, void (*page_handler)(struct page_info_t *, void *), void *extra);
-void retrieve_block(struct buffer_t *, struct bz_part_t *, uint64_t offset, uint64_t size);
+struct bz_part_t *traverse_pages(
+	struct buffer_t *buf,
+	void (*page_handler)(struct page_info_t *, void *),
+	void (*part_handler)(struct bz_part_t*, void *),
+	void *extra);
+
+struct bz_part_t *traverse_parts_only(
+	struct buffer_t *buf,
+	void (*part_handler)(struct bz_part_t*, void *),
+	void *extra);
+
+uint64_t extract_page(
+	struct buffer_t *buf, uint64_t bit_offset,
+	char *dst, uint64_t dst_size);
 
 #endif

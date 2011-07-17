@@ -8,6 +8,7 @@
 #define BZ_BUFSIZE 1024*1024*2
 
 struct buffer_t {
+	char *fn;
 	int fd;
 	uint64_t size;
 
@@ -20,7 +21,7 @@ struct buffer_t {
 
 struct bz_part_t {
 	struct bz_part_t *next;
-	char *fn;
+	struct buffer_t *buffer; /* source, it's easier to output here */
 
 	uint64_t start; /* start bit in bz2 */
 	uint64_t end; /* last+1 bit in bz2 */

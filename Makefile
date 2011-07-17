@@ -1,8 +1,10 @@
 CFLAGS=-D_BSD_SOURCE -D_LARGEFILE64_SOURCE -Wall -ggdb -std=c99 -O0
-LIBS=-lbz2 -lexpat
+CPPFLAGS=-Wall -ggdb
 
-main: bzpartial.o bzparse.o
-	gcc bzpartial.o bzparse.o -o $@ $(LIBS)
+LIBS=-lbz2 -lexpat -lstdc++ -lxapian
+
+main: bzpartial.o bzparse.o wkmain.o wkindex.o
+	gcc $^ -o $@ $(LIBS)
 
 clean:
 	rm -f *.o a.out main

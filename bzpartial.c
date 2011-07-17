@@ -28,6 +28,7 @@ void buffer_open(struct buffer_t *buf, char *fn, char *mode) {
     buf->offset = 0;
     buf->bit = 0;
     buf->map = 0;
+	buf->fn = fn;
 
     buf->fd = open(fn, O_RDONLY);
     if (buf->fd == -1) {
@@ -130,6 +131,8 @@ struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
 
     struct bz_part_t *part = (struct bz_part_t *)malloc(sizeof(struct bz_part_t));
     memset(part, 0, sizeof(struct bz_part_t));
+	part->buffer = buf;
+
     buffer_seek_bits(buf, start_offset);
 
     // find start

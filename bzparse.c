@@ -13,6 +13,23 @@ uint64_t get_pos(struct bzxml_parser_t *i) {
 	return index_unsafe;
 }
 
+void page_init(struct page_info_t *page) {
+	memset(page, 0, sizeof(struct page_info_t));
+
+	page->title = malloc(1024*sizeof(XML_Char));
+	page->title[0] = 0;
+	page->title_len = 1024;
+
+	page->body = malloc(4096*sizeof(XML_Char));
+	page->body[0] = 0;
+	page->body_len = 4096;
+}
+
+void page_destroy(struct page_info_t *page) {
+	free(page->title);
+	free(page->body);
+}
+
 void parse_el_start(void *data, const char *el, const char **attr) {
 	struct bzxml_parser_t *i = (struct bzxml_parser_t *)data;
 	i->depth++;
@@ -20,11 +37,14 @@ void parse_el_start(void *data, const char *el, const char **attr) {
 	if (i->page) {
 		/* parsing of teh text nodes */
 		struct page_info_t *page = i->page;
+
 		if ((i->depth == 3) && (strcmp(el, "title") == 0))
-			i->page->state = WK_STATE_TITLE;
+			page->state = WK_STATE_TITLE;
 	} else if ((i->depth == 2) && (strcmp(el, "page") == 0)) {
 		uint64_t pos = get_pos(i);
+
 		struct page_info_t *page = malloc(sizeof(struct page_info_t));
+		page_init(page);
 		i->page = page;
 
 		if ((i->part->next) && (pos >= i->part->next->byte_offset)) {
@@ -62,6 +82,7 @@ void parse_el_end(void *data, const char *el) {
 			i->page_handler(page, i->extra);
 		}
 
+		page_destroy(page);
 		free(page);
 		i->page = NULL;
 
@@ -71,6 +92,26 @@ void parse_el_end(void *data, const char *el) {
 	if ((i->depth == 2) && (strcmp(el, "title")) == 0)
 		i->page->state = WK_STATE_EMPTY;
 
+}
+
+void parse_el_text(void *data, const XML_Char *txt, int len) {
+	struct bzxml_parser_t *i = (struct bzxml_parser_t *)data;
+	struct page_info_t *page = i->page;
+	if (page == NULL) return;
+
+
+	if (page->state == WK_STATE_TITLE) {
+		int csize = strlen(page->title);
+		if ((len + csize + 1) >= page->title_len) {
+			uint32_t nsize = page->title_len;
+			while (nsize < (len + csize + 1)) nsize += 1024;
+
+			page->title = realloc(page->title, nsize);
+			page->title_len = nsize;
+		}
+
+		strncat(page->title, txt, len); /* txt isn't zero terminated */
+	}
 }
 
 void bzxml_init(struct bzxml_parser_t *i) {
@@ -85,6 +126,7 @@ void bzxml_init(struct bzxml_parser_t *i) {
 	}
 
 	XML_SetElementHandler(i->xmlp, parse_el_start, parse_el_end);
+	XML_SetCharacterDataHandler(i->xmlp, parse_el_text);
 	XML_SetUserData(i->xmlp, i);
 }
 
@@ -92,11 +134,9 @@ void bzxml_parse(struct bzxml_parser_t *i, char *data, uint64_t size, int done) 
 	if (! XML_Parse(i->xmlp, data, size, done)) {
 		if (XML_GetErrorCode(i->xmlp) == XML_ERROR_NO_ELEMENTS) {
 			fprintf(stderr, "Premature ending of xml stream: %s\n",
-				//XML_GetCurrentLineNumber(i->xmlp),
 				XML_ErrorString(XML_GetErrorCode(i->xmlp)));
 		} else {
 			fprintf(stderr, "XMLParse error: %s\n",
-				//XML_GetCurrentLineNumber(i->xmlp),
 				XML_ErrorString(XML_GetErrorCode(i->xmlp)));
 
 			exit(EXIT_FAILURE);
@@ -106,42 +146,18 @@ void bzxml_parse(struct bzxml_parser_t *i, char *data, uint64_t size, int done) 
 
 void bzxml_destroy(struct bzxml_parser_t *i) {
 	XML_ParserFree(i->xmlp);
-	if (i->page)
+	if (i->page) {
+		page_destroy(i->page);
 		free(i->page);
+	}
 }
 
-struct extra_t  {
-	uint64_t total_bits;
-	uint32_t articles;
-};
-
-void print_part_handler(struct bz_part_t *p, void *extra) {
-	struct extra_t *ei =  (struct extra_t *)extra;
-
-	int pm = (uint64_t)p->end * 1000 / (uint64_t)ei->total_bits;
-
-	fprintf(stderr,
-		"[%3d.%1d%% / %d] Part [%ld - %ld] byte_offset at %ld, page_offset %ld\n",
-		pm / 10,
-		pm % 10,
-		ei->articles,
-		p->start,
-		p->end,
-		p->byte_offset,
-		p->page_offset);
-}
-
-void print_page_handler(struct page_info_t *p, void *extra) {
-	struct extra_t *ei =  (struct extra_t *)extra;
-	ei->articles++;
-
-	fprintf(stderr, "Found and parsed page at global=%ld relative=%ld size=%ld\n",
-		p->offset + p->source->byte_offset,
-		p->offset,
-		p->size);
-}
-
-struct bz_part_t *parse_parts(struct buffer_t *buf) {
+struct bz_part_t *traverse_pages(
+	struct buffer_t *buf,
+	void (*page_handler)(struct page_info_t *, void *),
+	void (*part_handler)(struct bz_part_t*, void *),
+	void *extra) 
+{
 	struct bz_part_t *root = bz_find_part(buf, 0);
 	struct bz_part_t *part = root;
 
@@ -158,16 +174,13 @@ struct bz_part_t *parse_parts(struct buffer_t *buf) {
 	part->byte_offset = 0;
 	part->page_offset = -1; /* nuo nulio */
 
-	struct extra_t extra;
-	extra.total_bits = buf->size * 8;
-	extra.articles = 0;
-
 	struct bzxml_parser_t parser;
 	memset(&parser, 0, sizeof(struct bzxml_parser_t));
 	bzxml_init(&parser);
-	parser.extra = &extra;
-	parser.page_handler = print_page_handler;
-	parser.part_handler = print_part_handler;
+
+	parser.extra = extra;
+	parser.page_handler = page_handler;
+	parser.part_handler = part_handler;
 	parser.part = part;
 
 	struct bz_decoder_t *d = malloc(sizeof(struct bz_decoder_t));
@@ -184,7 +197,9 @@ struct bz_part_t *parse_parts(struct buffer_t *buf) {
 
 			if (next) {
 				next->byte_offset = sum;
-				//if (++part_cnt == 2) { free(next); next = NULL; }
+				part_cnt++;
+				
+				//if (part_cnt == 2) { free(next); next = NULL; }
 			}
 
 			part->next = next;
@@ -209,7 +224,11 @@ struct bz_part_t *parse_parts(struct buffer_t *buf) {
 	return root;
 }
 
-struct bz_part_t *find_parts(struct buffer_t *buf) {
+struct bz_part_t *traverse_parts_only(
+	struct buffer_t *buf,
+	void (*part_handler)(struct bz_part_t*, void *),
+	void *extra) 
+{
 	struct bz_part_t *root = bz_find_part(buf, 0);
 	struct bz_part_t *part = root;
 
@@ -218,13 +237,9 @@ struct bz_part_t *find_parts(struct buffer_t *buf) {
 		return NULL;
 	};
 
-	struct extra_t extra;
-	extra.total_bits = buf->size * 8;
-	extra.articles = 0;
-
 	while (part) {
 		struct bz_part_t *next = bz_find_part(buf, part->end);
-		print_part_handler(part, &extra);
+		part_handler(part, extra);
 
 		part->next = next;
 		part = next;
@@ -233,17 +248,47 @@ struct bz_part_t *find_parts(struct buffer_t *buf) {
 	return root;
 }
 
-int main(int argc, char **argv) {
-	struct buffer_t buf;
-	char *fn = "enwiki-20110526-pages-articles1.xml.bz2";
-	//char *fn = "/volumes/archive/torrents/enwiki-20110526-pages-articles.xml.bz2";
-	buffer_open(&buf, fn, "r");
+uint64_t extract_page(
+	struct buffer_t *buf, uint64_t bit_offset,
+	char *dst, uint64_t dst_size)
+{
+	struct bz_part_t *root = bz_find_part(buf, bit_offset);
+	struct bz_part_t *part = root;
+	
+	struct bz_decoder_t *d = malloc(sizeof(struct bz_decoder_t));
+	bz_decoder_init(d, buf, part);
+	uint64_t total = 0;
 
-	struct bz_part_t *root = parse_parts(&buf);
-	//struct bz_part_t *root = find_parts(&buf);
+	for (;;) {  /* read till offset */
+		if (dst_size == 0)
+			break;
 
+		uint64_t ret = bz_decode(d, dst, dst_size);
 
+		if (ret == 0) {
+			struct bz_part_t *next = bz_find_part(buf, part->end);
+
+			part->next = next;
+			part = next;
+
+			if (part) {
+				bz_decoder_destroy(d);
+				bz_decoder_init(d, buf, part);
+			} else {
+				/* error */
+				break;
+			}
+		} else {
+			dst_size -= ret;
+			dst += ret;
+			total += ret;
+		}
+	}
+
+	bz_decoder_destroy(d);
 	bz_free_parts(root);
-	buffer_close(&buf);
+	free(d);
 
+	return total;
 }
+
