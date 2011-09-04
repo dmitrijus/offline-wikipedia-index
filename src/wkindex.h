@@ -5,7 +5,7 @@
 extern "C" {
 #endif 
 
-#include "bzparse.h"
+#include "wkparse.h"
 
 struct wkindex_t {
 	void *obj;

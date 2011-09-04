@@ -81,7 +81,7 @@ int buffer_read_bit(struct buffer_t *buf) {
     int bit = (buf->bit & 0x7);
     bit = 7 - bit; // bit endianness
 
-    if (byte > buf->size)
+    if (byte >= buf->size)
         return EOF;
 
     if (!(byte & MMAP_MASK))
@@ -125,13 +125,9 @@ void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
 /*
  * Find part in a stream, return it's relative position and size
  */
-struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
+int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start, uint64_t *p_end) {
     uint64_t bits_read = 0;
     uint64_t head;
-
-    struct bz_part_t *part = (struct bz_part_t *)malloc(sizeof(struct bz_part_t));
-    memset(part, 0, sizeof(struct bz_part_t));
-	part->buffer = buf;
 
     buffer_seek_bits(buf, start_offset);
 
@@ -140,8 +136,7 @@ struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
     for (;;) {
         int bit = buffer_read_bit(buf);
         if (bit == EOF) {
-            free(part);
-            return NULL;
+            return -1;
         }
 
         bits_read++;
@@ -150,7 +145,7 @@ struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
         /* fprintf(stderr, "sup at: %ld\n", head); */
         if ((head & BZ_START_MASK) == BZ_START_MAGIC) {
             //fprintf(stderr, "Found start at: %ld\n", bits_read);
-            part->start = start_offset + bits_read;
+            *p_start = start_offset + bits_read;
             break;
         }
     }
@@ -161,7 +156,7 @@ struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
         int bit = buffer_read_bit(buf);
         if (bit == EOF) {
             fprintf(stderr, "Premature eof at bit: %ld\n", buf->bit);
-            part->end = start_offset + bits_read;
+            *p_end = start_offset + bits_read;
             break;
         }
 
@@ -173,21 +168,13 @@ struct bz_part_t *bz_find_part(struct buffer_t *buf, uint64_t start_offset) {
             ((head & BZ_EOS_MASK) == BZ_EOS_MAGIC)) {
 
             //fprintf(stderr, "magic: %lx at %ld\n", head & BZ_EOS_MASK, buf->bit);
-            part->end = start_offset + bits_read - 48;
+            *p_end = start_offset + bits_read - 48;
             break;
         }
     }
 
     //fprintf(stderr, "Found part at: %ld - %ld\n", part->start, part->end);
-    return part;
-}
-
-void bz_free_parts(struct bz_part_t *part) {
-    while (part) {
-        struct bz_part_t *n = part->next;
-        free(part);
-        part = n;
-    }
+    return 0;
 }
 
 void put_byte(char *dst, uint64_t *size, char byte) {
@@ -200,10 +187,18 @@ void put_byte(char *dst, uint64_t *size, char byte) {
 /*
  * Recreate partial archive for decompression, dst must be larger than 900k
  */
-uint64_t bz_recreate(struct buffer_t *buf, struct bz_part_t *part, char *dst) {
+uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_end, char *dst, uint64_t dst_len) {
+	uint64_t buf_size = (p_end - p_start + 8) / 8;
+	buf_size = buf_size + 4 + 6 + 6 + 4;
+
+	if (dst_len <= buf_size) {
+		fprintf(stderr, "Buffer size is too small to hold bz2 part");
+		exit(EXIT_FAILURE);
+	}
+
     /* recreate the header */
     uint64_t size = 0;
-    memset(dst, 0, BZ_BUFSIZE);
+    memset(dst, 0, dst_len);
 
     memcpy(dst, buf->head, 4); /* includes the start magic */
     size = 32;
@@ -211,8 +206,8 @@ uint64_t bz_recreate(struct buffer_t *buf, struct bz_part_t *part, char *dst) {
     put_byte(dst, &size, 0x31); put_byte(dst, &size, 0x41); put_byte(dst, &size, 0x59);
     put_byte(dst, &size, 0x26); put_byte(dst, &size, 0x53); put_byte(dst, &size, 0x59);
 
-    buffer_seek_bits(buf, part->start);
-    uint64_t data_size = buffer_transfer_bits(buf, part->end - part->start, dst+10);
+    buffer_seek_bits(buf, p_start);
+    uint64_t data_size = buffer_transfer_bits(buf, p_end - p_start, dst+10);
     size += data_size;
 
     // copy eos magic
@@ -231,52 +226,29 @@ uint64_t bz_recreate(struct buffer_t *buf, struct bz_part_t *part, char *dst) {
     return size / 8;
 }
 
-void bz_decoder_init(struct bz_decoder_t *d, struct buffer_t *buf, struct bz_part_t *p) {
-    d->part= p;
-    d->buf = buf;
-    d->eof = 0;
+uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t dst_len) {
+	char *part_buf = (char *)malloc(PART_BUF_SIZE);
 
-    memset(&d->stream, 0, sizeof(d->stream));
-    memset(d->bzbuf, 0, BZ_BUFSIZE);
+	uint64_t p_start, p_end;
 
-    if (BZ2_bzDecompressInit(&d->stream, 1, 0) != BZ_OK) {
-        fprintf(stderr, "BZip2 init error.\n");
-        exit(EXIT_FAILURE);
+	if (bz_find_part(buf, *offset, &p_start, &p_end) != 0) {
+        free(part_buf);    
+        return 0;
     }
 
-    d->bzbuf_len = bz_recreate(d->buf, d->part, d->bzbuf);
+	uint64_t part_len = bz_recreate(buf, p_start, p_end, part_buf, PART_BUF_SIZE);
+	unsigned int dst_len_ptr = dst_len;
 
-    d->stream.next_in = d->bzbuf;
-    d->stream.avail_in = d->bzbuf_len;
-
-    // FILE *t = fopen("kaka.bz2", "w"); fwrite(d->bzbuf, 1, d->bzbuf_len, t); fclose(t);
-    //fprintf(stderr, "init for part: %ld-%ld size=%ld\n", p->start, p->end, d->bzbuf_len);
-}
-
-void bz_decoder_destroy(struct bz_decoder_t *d) {
-    d->eof = 1;
-    BZ2_bzDecompressEnd(&d->stream);
-}
-
-uint64_t bz_decode(struct bz_decoder_t *d, char *buf, uint64_t len) {
-    if (d->eof)
-        return 0;
-
-    d->stream.next_out = buf;
-    d->stream.avail_out = len;
-
-    int ret = BZ2_bzDecompress(&d->stream);
-    uint64_t ret_size = len - d->stream.avail_out;
+	int ret = BZ2_bzBuffToBuffDecompress(dst, &dst_len_ptr, part_buf, part_len, 1, 0);
 
     if (ret == BZ_OK) {
-        fprintf(stderr, "decoded bit: %ld\n", ret_size);
-        return ret_size;
-    } else if (ret == BZ_STREAM_END) {
-        d->eof = 1;
-        return ret_size;
-    } else {
-        fprintf(stderr, "BZip2 read error: %d with avail_out=%d.\n", ret, d->stream.avail_out);
+        // fprintf(stderr, "decoded bit: %u\n", dst_len_ptr);
+    } else { 
+		fprintf(stderr, "BZip2 read error: %d\n", ret);
         exit(EXIT_FAILURE);
-        return 0;
     }
+
+	*offset = p_end;
+	free(part_buf);
+    return dst_len_ptr;
 }
