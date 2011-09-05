@@ -8,22 +8,43 @@
 #include "wkparse.h"
 #include "wkindex.h"
 
+// we need a temporal queue to hold our source position
+struct source_list_t {
+	struct source_list_t *next;
+
+    struct bze_part_t src;
+    uint64_t src_offset; // output started at this byte
+};
+
 struct parser_extra_t  {
-    struct bze_part_t *src;
     struct wkindex_t index;
 
     uint64_t articles;
     uint64_t total;
-    uint64_t byte_offset; // output started at this byte
+
+	struct source_list_t *root;
 };
 
+// if possible, remove the top element from source_list, so the next would represent the _current_ source chunk
+void deqeue_root(struct parser_extra_t *ei, uint64_t pos) {
+	assert(ei->root);
+
+	if ((ei->root->next) && (ei->root->next->src_offset <= pos)) {
+		struct source_list_t *tmp = ei->root;
+		ei->root = ei->root->next;
+		free(tmp);
+
+		deqeue_root(ei, pos);
+	}
+}
+
 void create_name(struct parser_extra_t *ei, struct page_info_t *p, char *buf, int buf_len) {
-    struct bze_part_t *part = ei->src;
+    struct bze_part_t *part = &(ei->root->src);
 
     snprintf(buf, buf_len, "%s:%ld:%ld:%ld:%s",
         part->src_fn,
         part->src_start,
-        p->position - ei->byte_offset,
+        p->position - ei->root->src_offset,
         p->size,
         p->title
     );
@@ -33,14 +54,18 @@ void print_page_handler(struct page_info_t *p, void *extra) {
     struct parser_extra_t *ei =  (struct parser_extra_t *)extra;
     ei->articles++;
 
+	deqeue_root(ei, p->position);
+
     char pn[1024]; pn[0] = 0;
     create_name(ei, p, pn, 1023);
 
+/*
     fprintf(stderr, "found article at: byte=%ld offset=%ld title=%s\n", 
         p->position,
-        p->position - ei->byte_offset,
+        p->position - ei->root->src_offset,
         p->title
     );
+*/
 
     wkindex_add_page(&ei->index, pn, p);
 }
@@ -48,11 +73,10 @@ void print_page_handler(struct page_info_t *p, void *extra) {
 #define XML_BUF_SIZE 1024
 
 void index_file(FILE *in) {
-    struct bze_part_t current;
-
     struct parser_extra_t extra;
     extra.articles = 0;
     extra.total = 0;
+	extra.root = NULL;
     wkindex_init(&extra.index, "db/");
 
     struct wkxml_parser_t parser;
@@ -60,8 +84,19 @@ void index_file(FILE *in) {
     parser.page_handler = print_page_handler;
     parser.extra = &extra;
 
+	struct source_list_t *previous_el = NULL;
+	struct source_list_t *current_el = NULL;
+
     for (;;) {
-        int r = fread(&current, sizeof(struct bze_part_t), 1, in);
+		previous_el = current_el;
+		current_el = malloc(sizeof(struct source_list_t));
+		memset(current_el, 0, sizeof(struct source_list_t));
+
+		if (previous_el) {
+			previous_el->next = current_el;
+		}
+
+        int r = fread(&current_el->src, sizeof(struct bze_part_t), 1, in);
 
         if (r != 1) {
             if (feof(in)) {
@@ -72,7 +107,7 @@ void index_file(FILE *in) {
             }
         }
 
-        if (current.magic != BZE_PART_MAGIC) {
+        if (current_el->src.magic != BZE_PART_MAGIC) {
             perror("received invalid magic:");
             exit(EXIT_FAILURE);
         }
@@ -80,11 +115,13 @@ void index_file(FILE *in) {
         // fprintf(stderr, "vread: magic=%lx start=%lu size=%u\n",
         //    current.magic, current.src_start, current.dst_size);
 
-        uint32_t left = current.dst_size;
+        uint32_t left = current_el->src.dst_size;
         char xml_buf[XML_BUF_SIZE];
 
-        extra.src = &current;
-        extra.byte_offset = extra.total;
+		if (!extra.root) {
+			extra.root = current_el;
+		}
+        current_el->src_offset = extra.total;
 
         while (left > 0) {
             uint32_t vread = left;
@@ -100,17 +137,23 @@ void index_file(FILE *in) {
             left -= have_read;
             wkxml_parse(&parser, xml_buf, have_read, 0);
         }
-        extra.total += current.dst_size;
+        extra.total += current_el->src.dst_size;
 
         fprintf(stderr, "so far parsed %ld articles [%ld bytes].\n", extra.articles, extra.total);
     }
+
+	while (extra.root) {
+		struct source_list_t *tmp = extra.root;
+		extra.root = tmp->next;
+		free(tmp);
+	}
 
     wkxml_destroy(&parser);
     wkindex_destroy(&extra.index);
 }
 
 
-/* 
+/*
  * handling articles paths
  * extacting xml
  * */

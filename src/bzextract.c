@@ -37,6 +37,7 @@ int print_part(struct bze_part_t *p, struct bze_options_t *opts, char *out_buf, 
 	} else if (opts->seek_bytes > 0) {
 		out_len -= opts->seek_bytes;
 		out_buf += opts->seek_bytes;
+		opts->seek_bytes = 0;
 	}
 
 	// check output bytes
