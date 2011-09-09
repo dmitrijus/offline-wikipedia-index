@@ -12,9 +12,9 @@ void bze_help(char *name) {
 	fprintf(stderr, "usage: %s [-i offset] [-s skip] [-c count] file.bz2\n", name);
 	fprintf(stderr, "version: 0.2\n");
 	fprintf(stderr, "options:\n");
-	fprintf(stderr, "\t -i bits \t\tnumbers of bits to skip while opening a given .bz2 .\n");
-	fprintf(stderr, "\t -s count \t\tdont include the count of extracted bytes in the output.\n");
-	fprintf(stderr, "\t -c count \t\tstop after writing given count of bytes to the output.\n");
+	fprintf(stderr, "\t -i bits \t\tnumbers of bits to skip while opening a given .bz2 (bit_offset).\n");
+	fprintf(stderr, "\t -s count \t\tdont include the count of extracted bytes in the output (byte_count).\n");
+	fprintf(stderr, "\t -c count \t\tstop after writing given count of bytes to the output (byte_count).\n");
 	fprintf(stderr, "\t -m \t\tmachine parsable, binary output\t\t\n");
 }
 
@@ -61,8 +61,8 @@ int main(int argc, char **argv) {
 	};
 
 	opts.fn =  argv[optind];
-	fprintf(stderr, "Starting %s with bit=%lu, seek=%lu, count=%lu\n", opts.fn,
-		opts.start_bit, opts.seek_bytes, opts.stop_bytes);
+//	fprintf(stderr, "Starting %s with bit=%lu, seek=%lu, count=%lu\n", opts.fn,
+//		opts.start_bit, opts.seek_bytes, opts.stop_bytes);
 
 	return bze_extract_data(&opts);
 }

@@ -3,6 +3,7 @@
 #include <expat.h>
 #include <assert.h>
 #include <getopt.h>
+#include <libgen.h>
 
 #include "bzextract.h"
 #include "wkparse.h"
@@ -25,6 +26,17 @@ struct parser_extra_t  {
 	struct source_list_t *root;
 };
 
+// structure to hold command line arguments;
+struct main_opts_t {
+	int max_results;
+	char print_article;
+
+	char *base_dir;
+	char *db_path;
+};
+
+static struct main_opts_t defaults;
+
 // if possible, remove the top element from source_list, so the next would represent the _current_ source chunk
 void deqeue_root(struct parser_extra_t *ei, uint64_t pos) {
 	assert(ei->root);
@@ -38,26 +50,24 @@ void deqeue_root(struct parser_extra_t *ei, uint64_t pos) {
 	}
 }
 
-void create_name(struct parser_extra_t *ei, struct page_info_t *p, char *buf, int buf_len) {
-    struct bze_part_t *part = &(ei->root->src);
-
-    snprintf(buf, buf_len, "%s:%ld:%ld:%ld:%s",
-        part->src_fn,
-        part->src_start,
-        p->position - ei->root->src_offset,
-        p->size,
-        p->title
-    );
-}
-
-void print_page_handler(struct page_info_t *p, void *extra) {
+void print_page_handler(struct page_info_t *pg, void *extra) {
     struct parser_extra_t *ei =  (struct parser_extra_t *)extra;
     ei->articles++;
 
-	deqeue_root(ei, p->position);
+	deqeue_root(ei, pg->position);
+	
+	struct wk_page_entry_t p;
+	p.fn = basename(ei->root->src.src_fn);
+	p.bit_offset = ei->root->src.src_start;
+	p.byte_offset = pg->position - ei->root->src_offset;
+	p.byte_count = pg->size;
 
     char pn[1024]; pn[0] = 0;
-    create_name(ei, p, pn, 1023);
+    snprintf(pn, 1024, "%s:%ld:%ld:%ld",
+        p.fn, p.bit_offset, p.byte_offset, p.byte_count);
+
+	p.title = pg->title;
+	p.id = pn;
 
 /*
     fprintf(stderr, "found article at: byte=%ld offset=%ld title=%s\n", 
@@ -67,17 +77,17 @@ void print_page_handler(struct page_info_t *p, void *extra) {
     );
 */
 
-    wkindex_add_page(&ei->index, pn, p);
+    wkindex_add_page(&ei->index, &p);
 }
 
 #define XML_BUF_SIZE 1024
 
-int index_file(char *db, FILE *in) {
+int index_file(FILE *in) {
     struct parser_extra_t extra;
     extra.articles = 0;
     extra.total = 0;
 	extra.root = NULL;
-    wkindex_init(&extra.index, db);
+    wkindex_init(&extra.index, defaults.db_path);
 
     struct wkxml_parser_t parser;
     wkxml_init(&parser);
@@ -229,13 +239,27 @@ int extract_xml(char *path_id) {
 	return 0;
 }
 
-int query_string(char *db, char *str) {
+int query_string(char *str) {
 	struct wkreader_t r;
+	struct wk_title_match_t *m;
 
-	wkreader_init(&r, db);
+	wkreader_init(&r, defaults.db_path);
+	m = wkreader_match_query(&r, str, defaults.max_results);
 
-	wkreader_match(&r, str);
+	wk_title_match_free(m);
+	wkreader_destroy(&r);
 
+	return 0;
+}
+
+int query_title(char *str) {
+	struct wkreader_t r;
+	struct wk_title_match_t *m;
+
+	wkreader_init(&r, defaults.db_path);
+	m = wkreader_match_title(&r, str);
+
+	wk_title_match_free(m);
 	wkreader_destroy(&r);
 
 	return 0;
@@ -247,13 +271,23 @@ void help(char *name) {
     fprintf(stderr, "\t -i          \tindex tagged xml from stdin (output from bzextract -m).\n");
     fprintf(stderr, "\t -e \"art_id\"\textract xml dump for given article id.\n");
     fprintf(stderr, "\t -q \"query\" \tquery teh database.\n");
-    fprintf(stderr, "\t -o \"query\" \tquery teh database, output first document found.\n");
+    fprintf(stderr, "\t -t \"query\" \tquery teh database for given title, output first document found.\n");
+    fprintf(stderr, "\t -c count     \tnumber of results to display (for -q).\n");
+    fprintf(stderr, "\t -d           \tdisplay the first article (for -q and -t).\n");
+    fprintf(stderr, "\t -p path      \tdb path, default: \"./db/\".\n");
+    fprintf(stderr, "\t -b path      \tbase dir for opening files (including trailing slash), default: \"./\".\n");
+
 }
 
 int main(int argc, char **argv) {
     int c;
 
-    while ((c = getopt (argc, argv, "vhie:q:")) != -1) {
+	defaults.max_results = 32;
+	defaults.print_article = 0;
+	defaults.base_dir = "./";
+	defaults.db_path = "./db";
+
+    while ((c = getopt (argc, argv, "vhide:q:t:c:p:b:")) != -1) {
         switch (c) {
             case 'v':
                 help(argv[0]);
@@ -261,12 +295,23 @@ int main(int argc, char **argv) {
             case 'h':
                 help(argv[0]);
                 return 0;
+			case 'c':
+				sscanf(optarg, "%d", &defaults.max_results);
+				break;
+			case 'd':
+				defaults.print_article = 1;
+				break;
+			case 'p':
+				defaults.db_path = optarg;
+				break;
             case 'i':
-                return index_file("db/", stdin);
+                return index_file(stdin);
             case 'e':
                 return extract_xml(optarg);
 			case 'q':
-				return query_string("db/", optarg);
+				return query_string(optarg);
+			case 't':
+				return query_title(optarg);
             default:
                 help(argv[0]);
                 return 1;

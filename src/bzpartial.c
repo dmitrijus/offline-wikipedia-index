@@ -239,7 +239,7 @@ uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t 
 	uint64_t part_len = bz_recreate(buf, p_start, p_end, part_buf, PART_BUF_SIZE);
 	unsigned int dst_len_ptr = dst_len;
 
-	int ret = BZ2_bzBuffToBuffDecompress(dst, &dst_len_ptr, part_buf, part_len, 1, 0);
+	int ret = BZ2_bzBuffToBuffDecompress(dst, &dst_len_ptr, part_buf, part_len, 0, 0);
 
     if (ret == BZ_OK) {
         // fprintf(stderr, "decoded bit: %u\n", dst_len_ptr);

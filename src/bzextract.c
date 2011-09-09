@@ -7,15 +7,22 @@
 #include <getopt.h>
 #include <assert.h>
 #include <unistd.h>
+#include <time.h>
 
-void print_part_info(struct bze_part_t *p, uint64_t buf_size, uint64_t total) {
+void print_part_info(struct bze_part_t *p, uint64_t buf_size, uint64_t total, clock_t st) {
 	int pm = (uint64_t)p->src_end * 1000 / ((uint64_t)buf_size * 8);
+	
+	double clk = (double)(clock() - st) / CLOCKS_PER_SEC;
+	if (clk == 0)
+		clk = 1;
+
+	double bw = ((double)p->src_end / 8 / 1000 / 1000) / clk; 
 
 	fprintf(stderr,
-		"[%3d.%1d%%] part [%ld - %ld], uncompressed = %ld, total = %ld\n",
+		"[%3d.%1d%%] part [%ld - %ld], uncompressed: %ld, total: %ld, bw: %.2lf mb/s\n",
 		pm / 10, pm % 10,
 		p->src_start, p->src_end,
-		p->dst_size, total);
+		p->dst_size, total, bw);
 }
 
 
@@ -70,6 +77,7 @@ int bze_extract_data(struct bze_options_t *opts) {
 
 	char *data_buf = (char *)malloc(DATA_BUF_SIZE);
 	uint64_t total = 0;
+	clock_t start = clock();
 
 	for (;;) {
 		p_start = p_end;
@@ -85,7 +93,7 @@ int bze_extract_data(struct bze_options_t *opts) {
 		part.dst_size = size;
 		total += size;
 
-		print_part_info(&part, buf.size, total);
+		print_part_info(&part, buf.size, total, start);
 
 		if (print_part(&part, opts, data_buf, size))
 			break;
