@@ -1,4 +1,4 @@
-CFLAGS=-D_BSD_SOURCE -D_LARGEFILE64_SOURCE -Wall -ggdb -std=c99 -O2 
+CFLAGS=-D_BSD_SOURCE -D_LARGEFILE64_SOURCE -Wall -ggdb -std=c99 -O2
 CPPFLAGS=-Wall -ggdb
 
 LIBS=-lbz2 -lexpat -lstdc++ -lxapian

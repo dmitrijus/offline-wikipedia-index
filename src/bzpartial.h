@@ -12,11 +12,16 @@ struct buffer_t {
 	int fd;
 	uint64_t size;
 
-	uint64_t bit;
+	char eof; // eof flag
+	uint32_t bit; // real bit if offset*8 + bit
 	uint64_t offset;
 
 	char head[16];
 	char *map;
+
+	uint32_t act_size;
+	uint32_t map_size;
+	uint64_t map_offset;
 };
 
 void buffer_open(struct buffer_t *buf, char *fn, char *mode);

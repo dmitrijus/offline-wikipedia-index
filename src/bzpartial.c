@@ -11,8 +11,9 @@
 #include <stdio.h>
 #include <bzlib.h>
 
-#define MMAP_SIZE 0x0000000010000000ULL
-#define MMAP_MASK 0x000000000FFFFFFFULL
+//                          76543210 // 16mb (-1 must result in a mask)
+#define MMAP_SIZE 0x0000000000100000ULL
+
 #define BZ_START_MAGIC 0x0000314159265359ULL
 #define BZ_START_MASK  0x0000FFFFFFFFFFFFULL
 #define BZ_EOS_MAGIC  0x0000177245385090ULL
@@ -27,7 +28,10 @@
 void buffer_open(struct buffer_t *buf, char *fn, char *mode) {
     buf->offset = 0;
     buf->bit = 0;
-    buf->map = 0;
+    buf->map = NULL;
+	buf->map_size = MMAP_SIZE;
+	buf->map_offset = 0;
+	buf->offset = 0;
 	buf->fn = fn;
 
     buf->fd = open(fn, O_RDONLY);
@@ -49,56 +53,103 @@ void buffer_open(struct buffer_t *buf, char *fn, char *mode) {
     buffer_reopen(buf);
 }
 
-void buffer_reopen(struct buffer_t *buf) {
-    uint64_t offset = (buf->bit >> 3) & (~MMAP_MASK);
+void buffer_open_anon(struct buffer_t *buf) {
+    buf->offset = 0;
+    buf->bit = 0;
+    buf->map = NULL;
+	buf->fn = NULL;
+	buf->offset = 0;
+	buf->size = PART_BUF_SIZE;
+	buf->map_size = PART_BUF_SIZE;
+	buf->map_offset = 0;
 
-    if ((offset == buf->offset) && (buf->map))
-        return;
-
-    if (buf->map) {
-        munmap(buf->map, MMAP_SIZE);
-    };
-
-    lseek(buf->fd, 0, SEEK_SET);
-    char *ret = mmap(0, MMAP_SIZE, PROT_READ, MAP_PRIVATE, buf->fd, offset);
+    char *ret = mmap(0, PART_BUF_SIZE, PROT_READ, MAP_ANONYMOUS, -1, 0);
     if (ret == NULL) {
         perror("Error mmap'ing file:");
         exit(EXIT_FAILURE);
     }
 
-    madvise(ret, MMAP_SIZE, MADV_SEQUENTIAL);
+	buf->map = ret;
+}
+
+void buffer_reopen(struct buffer_t *buf) {
+    if ((buf->map_offset == buf->offset) && (buf->map))
+        return;
+
+	if (!buf->fn) {
+		fprintf(stderr, "reopen in anonymous\n");
+		exit(EXIT_FAILURE);
+		return;
+	};
+
+	// check for eof
+	if ((buf->offset + (buf->bit >> 3)) >= buf->size) {
+		buf->eof = 1;
+	} else {
+		buf->eof = 0;
+		buf->act_size = buf->map_size;
+
+		if (buf->act_size > (buf->size - buf->offset))
+			buf->act_size = buf->size - buf->offset;
+	}
+
+    if (buf->map) {
+		munmap(buf->map, buf->map_size);
+    };
+
+    lseek(buf->fd, 0, SEEK_SET);
+    char *ret = mmap(0, buf->map_size, PROT_READ, MAP_PRIVATE, buf->fd, buf->offset);
+    if (ret == NULL) {
+        perror("Error mmap'ing file:");
+        exit(EXIT_FAILURE);
+    }
+
+    madvise(ret, buf->map_size, MADV_SEQUENTIAL);
 
     buf->map = ret;
-    buf->offset = offset;
+	buf->map_offset = buf->offset;
 }
 
 void buffer_close(struct buffer_t *buf) {
-    close(buf->fd);
+    munmap(buf->map, buf->map_size);
+
+	if (buf->fd) {
+	    close(buf->fd);
+	}
 }
 
 int buffer_read_bit(struct buffer_t *buf) {
-    uint64_t byte = (buf->bit >> 3);
+	if (buf->eof)
+		return -1;
+
     int bit = (buf->bit & 0x7);
-    bit = 7 - bit; // bit endianness
+    bit = 7 - bit; // big endianness
 
-    if (byte >= buf->size)
-        return EOF;
+    int ret = (buf->map[buf->bit >> 3] >> bit) & 0x1;
 
-    if (!(byte & MMAP_MASK))
-        buffer_reopen(buf);
+	if (buf->bit >= ((buf->act_size << 3) - 1)) {
+		buf->offset += buf->map_size;
+		buf->bit = 0;
+		buffer_reopen(buf);
+	} else {
+		++buf->bit;
+	}
 
-    /* fprintf(stderr, "pos: %ld[%ld] byte: %d bit: %d",
-        buf->bit, byte & MMAP_MASK,
-        buf->map[byte & MMAP_MASK],
-        buf->map[byte & MMAP_MASK] >> bit);
-    */
-
-//  fprintf(stderr, "reading bit=%ld byte=%ld mbyte=%ld\n", buf->bit, byte, byte & MMAP_MASK);
-    buf->bit++;
-    return (buf->map[byte & MMAP_MASK] >> bit) & 0x1;
+	return ret;
 }
 
-uint64_t buffer_transfer_bits(struct buffer_t *buf, uint64_t size, char *dst) {
+
+void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
+	uint64_t bytes_from_offset = (bits >> 3) & (buf->map_size - 1);
+
+	buf->offset = (bits >> 3) - bytes_from_offset;
+    buf->bit = (bytes_from_offset << 3) + (bits & 0x7); 
+
+	//fprintf(stderr, "seek to: offset=%ld bit=%d given=%ld\n", buf->offset, buf->bit, bits);
+    buffer_reopen(buf);
+}
+
+uint64_t buffer_transfer_bits_slow(struct buffer_t *buf, uint64_t size, char *dst) {
     uint64_t pos = 0;
     uint64_t total = size >> 8;
 
@@ -117,10 +168,28 @@ uint64_t buffer_transfer_bits(struct buffer_t *buf, uint64_t size, char *dst) {
     return size;
 }
 
-void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
-    buf->bit = bits;
-    buffer_reopen(buf);
+uint64_t buffer_transfer_bits2(struct buffer_t *buf, uint64_t size, char *dst) {
+	return 0;
+
+	if (size < 16)
+		return buffer_transfer_bits_slow(buf, size, dst);
+
+	// filling the buffer till we hit byte boundary for 
+	char orig_pad = 8 - (buf->bit & 0x7);
+	if (orig_pad == 8) orig_pad = 0;
+
+	size -= orig_pad;
+	buffer_transfer_bits_slow(buf, orig_pad, dst);
+	dst += orig_pad;
+
+	// ensure buffer has at least 1mb (size / 8) of space ahead
+
+	// starting fast copy
+	char out_pad = 8 - (size & 0x7);
+	if (out_pad == 8) out_pad = 0;
+
 }
+
 
 /*
  * Find part in a stream, return it's relative position and size
@@ -144,7 +213,7 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
         head = (head << 1) ^ bit;
         /* fprintf(stderr, "sup at: %ld\n", head); */
         if ((head & BZ_START_MASK) == BZ_START_MAGIC) {
-            //fprintf(stderr, "Found start at: %ld\n", bits_read);
+            // fprintf(stderr, "Found start at: %ld\n", bits_read);
             *p_start = start_offset + bits_read;
             break;
         }
@@ -154,8 +223,9 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
     head = 0;
     for (;;) {
         int bit = buffer_read_bit(buf);
+
         if (bit == EOF) {
-            fprintf(stderr, "Premature eof at bit: %ld\n", buf->bit);
+            fprintf(stderr, "Premature eof at bit: %ld\n", bits_read);
             *p_end = start_offset + bits_read;
             break;
         }
@@ -173,7 +243,7 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
         }
     }
 
-    //fprintf(stderr, "Found part at: %ld - %ld\n", part->start, part->end);
+    //fprintf(stderr, "Found part at: %lu - %lu\n", *p_start, *p_end);
     return 0;
 }
 
@@ -189,7 +259,7 @@ void put_byte(char *dst, uint64_t *size, char byte) {
  */
 uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_end, char *dst, uint64_t dst_len) {
 	uint64_t buf_size = (p_end - p_start + 8) / 8;
-	buf_size = buf_size + 4 + 6 + 6 + 4;
+	buf_size = buf_size + 4 + 6 + 6 + 4 + 1;
 
 	if (dst_len <= buf_size) {
 		fprintf(stderr, "Buffer size is too small to hold bz2 part");
@@ -203,11 +273,13 @@ uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_end, cha
     memcpy(dst, buf->head, 4); /* includes the start magic */
     size = 32;
 
+	char cm_head[6] = {0x31, 0x41, 0x59, 0x26, 0x53, 0x59};
+
     put_byte(dst, &size, 0x31); put_byte(dst, &size, 0x41); put_byte(dst, &size, 0x59);
     put_byte(dst, &size, 0x26); put_byte(dst, &size, 0x53); put_byte(dst, &size, 0x59);
 
     buffer_seek_bits(buf, p_start);
-    uint64_t data_size = buffer_transfer_bits(buf, p_end - p_start, dst+10);
+    uint64_t data_size = buffer_transfer_bits_slow(buf, p_end - p_start, dst+10);
     size += data_size;
 
     // copy eos magic
