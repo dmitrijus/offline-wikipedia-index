@@ -9,6 +9,7 @@
 #include <cctype>
 #include <algorithm>
 #include <cstring>
+#include <cstdio>
 
 #include "wkindex.h"
 
@@ -24,22 +25,59 @@ class WikiIndex {
 		Xapian::WritableDatabase database;
 };
 
-void wkindex_init(struct wkindex_t *_x, char *db) {
-	WikiIndex *x = new WikiIndex(db);
-	_x->obj = static_cast<void *>(x); // i hate c++, dunno what this really does
+class WikiReader {
+	public:
+		WikiReader(char *db);
+		~WikiReader();
+
+		struct wk_title_match_t *match(char *pattern);
+	protected:
+		Xapian::Database database;
 };
 
-void wkindex_destroy(struct wkindex_t *_x) {
+
+int wkindex_init(struct wkindex_t *_x, char *db) {
+	WikiIndex *x = new WikiIndex(db);
+	_x->obj = static_cast<void *>(x); // i hate c++, dunno what this really does
+
+	return 0;
+}
+
+int wkindex_destroy(struct wkindex_t *_x) {
 	WikiIndex *x = static_cast<WikiIndex *>(_x->obj);
 	delete x;
-	
+
 	_x->obj = NULL;
-};
+
+	return 0;
+}
+
 
 void wkindex_add_page(struct wkindex_t *_x, char *title, struct page_info_t *page) {
 	WikiIndex *x = static_cast<WikiIndex *>(_x->obj);
 	x->add_article(title, page);
-};
+}
+
+int wkreader_init(struct wkreader_t *_x, char *db) {
+	WikiReader *x = new WikiReader(db);
+	_x->obj = static_cast<void *>(x); // i hate c++, dunno what this really does
+
+	return 0;
+}
+
+int wkreader_destroy(struct wkreader_t *_x) {
+	WikiReader *x = static_cast<WikiReader*>(_x->obj);
+	delete x;
+
+	_x->obj = NULL;
+	return 0;
+}
+
+struct wk_title_match_t *wkreader_match(struct wkreader_t *_x, char *query) {
+	WikiReader *x = static_cast<WikiReader*>(_x->obj);
+
+	return x->match(query);
+}
 
 #define DELIMS " ,.;-_!?/[]()"
 inline bool is_splittable(const char c) {
@@ -56,14 +94,14 @@ void trim(std::string& str)
 	if (pos != string::npos)
 		str.erase(pos + 1);
 	else
-		str.clear();  
+		str.clear();
 
 	/* ltrim */
 	pos = str.find_first_not_of(DELIMS);
 	if (pos != string::npos)
 		str.erase(0, pos);
 	else
-		str.clear();  
+		str.clear();
 }
 
 void wiki_tokenize(const string _str, list<string>& tokens) {
@@ -78,7 +116,7 @@ void wiki_tokenize(const string _str, list<string>& tokens) {
 			str++;
 
 			if (is_splittable(*str)) break;
-			if ((str > orig) && 
+			if ((str > orig) &&
 				isupper(str[0]) &&
 				islower(str[-1]))
 					break;
@@ -138,3 +176,12 @@ void WikiIndex::add_article(char *source, struct page_info_t *page) {
 
     this->database.add_document(doc);
 };
+
+WikiReader::WikiReader(char *fdb) : database(fdb) {};
+WikiReader::~WikiReader() {};
+
+struct wk_title_match_t *WikiReader::match(char *query) {
+	fprintf(stderr, "got query str: %s\n", query);
+	return NULL;
+}
+

@@ -10,20 +10,19 @@ struct page_info_t {
 
 	enum {
 		WK_STATE_EMPTY = 0,
-		WK_STATE_TITLE
-
+		WK_STATE_BODY = 1,
+		WK_STATE_TITLE = 2
 	} state;
 
-	XML_Char *title;
-	XML_Char *body;
+	char title[4096];
 
-	int title_len;
+	char *body;
 	int body_len;
 };
 
 struct wkxml_parser_t {
 	int depth;
-	struct page_info_t *page;
+	struct page_info_t page;
 
 	void (*page_handler)(struct page_info_t *, void *);
 	void *extra;

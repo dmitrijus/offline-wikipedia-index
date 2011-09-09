@@ -72,12 +72,12 @@ void print_page_handler(struct page_info_t *p, void *extra) {
 
 #define XML_BUF_SIZE 1024
 
-void index_file(FILE *in) {
+int index_file(char *db, FILE *in) {
     struct parser_extra_t extra;
     extra.articles = 0;
     extra.total = 0;
 	extra.root = NULL;
-    wkindex_init(&extra.index, "db/");
+    wkindex_init(&extra.index, db);
 
     struct wkxml_parser_t parser;
     wkxml_init(&parser);
@@ -150,6 +150,8 @@ void index_file(FILE *in) {
 
     wkxml_destroy(&parser);
     wkindex_destroy(&extra.index);
+
+	return 0;
 }
 
 
@@ -203,7 +205,7 @@ char *extract_uint64(char *path_id, uint64_t *out) {
     return token + 1;
 }
 
-void extract_xml(char *path_id) {
+int extract_xml(char *path_id) {
     char *token = path_id;
     char fn[1024];
 
@@ -216,44 +218,42 @@ void extract_xml(char *path_id) {
     token = extract_uint64(token, &pg_offset);
     token = extract_uint64(token, &pg_size);
 
-    fprintf(stderr, "give: %s:%ld:%ld:%ld:dontcare\n",
-        fn,
-        offset,
-        pg_offset,
-        pg_size
-    );
+//    fprintf(stderr, "give: %s:%ld:%ld:%ld:dontcare\n",
+//        fn,offset,pg_offset, pg_size);
 
-    struct bze_options_t opts;
-    opts.start_bit = offset;
-    opts.seek_bytes = pg_offset;
-    opts.stop_bytes = pg_size;
-    opts.fn = fn;
+	char *out = bze_extract_string(fn, offset, pg_offset, pg_size);
 
-    //bze_extract_data(&opts);
+	fputs(out, stdout);
 
-    /*
-    struct buffer_t buf;
-    buffer_open(&buf, fn, "r");
-    
-    char *xml_buf = malloc((pg_offset + pg_size + 1) * sizeof(char));
-    extract_page(&buf, offset - 48, xml_buf, pg_offset + pg_size);
+	free(out);
+	return 0;
+}
 
-    xml_buf[pg_offset + pg_size] = 0;
-    printf("%s\n", &xml_buf[pg_offset]);
-    */
-};
+int query_string(char *db, char *str) {
+	struct wkreader_t r;
+
+	wkreader_init(&r, db);
+
+	wkreader_match(&r, str);
+
+	wkreader_destroy(&r);
+
+	return 0;
+}
 
 void help(char *name) {
     fprintf(stderr, "%s version v0.1\n", name);
     fprintf(stderr, "usage: %s -i file | -h | -v\noptions:\n", name);
     fprintf(stderr, "\t -i          \tindex tagged xml from stdin (output from bzextract -m).\n");
-    fprintf(stderr, "\t -e article_id\textract xml dump for given article id.\n");
+    fprintf(stderr, "\t -e \"art_id\"\textract xml dump for given article id.\n");
+    fprintf(stderr, "\t -q \"query\" \tquery teh database.\n");
+    fprintf(stderr, "\t -o \"query\" \tquery teh database, output first document found.\n");
 }
 
 int main(int argc, char **argv) {
     int c;
 
-    while ((c = getopt (argc, argv, "vhie:")) != -1) {
+    while ((c = getopt (argc, argv, "vhie:q:")) != -1) {
         switch (c) {
             case 'v':
                 help(argv[0]);
@@ -262,11 +262,11 @@ int main(int argc, char **argv) {
                 help(argv[0]);
                 return 0;
             case 'i':
-                index_file(stdin);
-                return 0;
+                return index_file("db/", stdin);
             case 'e':
-                extract_xml(optarg);
-                return 0;
+                return extract_xml(optarg);
+			case 'q':
+				return query_string("db/", optarg);
             default:
                 help(argv[0]);
                 return 1;

@@ -8,16 +8,6 @@
 #include <assert.h>
 #include <unistd.h>
 
-void bze_help(char *name) {
-	fprintf(stderr, "usage: %s [-i offset] [-s skip] [-c count] file.bz2\n", name);
-	fprintf(stderr, "version: 0.2\n");
-	fprintf(stderr, "options:\n");
-	fprintf(stderr, "\t -i bits \t\tnumbers of bits to skip while opening a given .bz2 .\n");
-	fprintf(stderr, "\t -s count \t\tdont include the count of extracted bytes in the output.\n");
-	fprintf(stderr, "\t -c count \t\tstop after writing given count of bytes to the output.\n");
-	fprintf(stderr, "\t -m \t\tmachine parsable, binary output\t\t\n");
-}
-
 void print_part_info(struct bze_part_t *p, uint64_t buf_size, uint64_t total) {
 	int pm = (uint64_t)p->src_end * 1000 / ((uint64_t)buf_size * 8);
 
@@ -54,19 +44,11 @@ int print_part(struct bze_part_t *p, struct bze_options_t *opts, char *out_buf, 
 	if (opts->output_type & OUT_PARTI) {
 		p->dst_size = out_len;
 
-		ssize_t written = write(1, p, sizeof(struct bze_part_t));
-		if (written != sizeof(struct bze_part_t)) {
-			perror("Error writing:");
-			exit(EXIT_FAILURE);
-		}
+		opts->write_fun(opts->write_opts, (char *)p, sizeof(struct bze_part_t));
 	}
 
 	if (opts->output_type & OUT_SIMPLE) {
-		ssize_t written = write(1, out_buf, out_len);
-		if (written != out_len) {
-			perror("Error writing:");
-			exit(EXIT_FAILURE);
-		}
+		opts->write_fun(opts->write_opts, out_buf, out_len);
 	}
 
 	// output
@@ -82,8 +64,8 @@ int bze_extract_data(struct bze_options_t *opts) {
 	uint64_t p_end = opts->start_bit;
 
 	struct bze_part_t part;
-	strncpy(part.src_fn, opts->fn, 1024);
-	part.src_fn[1024] = 0;
+	strncpy(part.src_fn, opts->fn, 1023);
+	part.src_fn[1023] = 0;
 	part.magic = BZE_PART_MAGIC;
 
 	char *data_buf = (char *)malloc(DATA_BUF_SIZE);
@@ -115,49 +97,59 @@ int bze_extract_data(struct bze_options_t *opts) {
 	return 0;
 }
 
-int main(int argc, char **argv) {
-	int c;
+void bze_write_stdout_fun(void *opts, char *buf, uint64_t buf_len) {
+	ssize_t written = write(1, buf, buf_len);
 
-	struct bze_options_t opts;
-	opts.start_bit = 0;
-	opts.seek_bytes = 0;
-	opts.stop_bytes = -1;
-	opts.output_type = OUT_SIMPLE;
+	if (written != buf_len) {
+		perror("Error writing:");
+		exit(EXIT_FAILURE);
+	}
+}
 
-	while ((c = getopt(argc, argv, ":vhmi:s:c:")) != -1) {
-		switch (c) {
-			case 'v':
-				bze_help(argv[0]);
-				return 0;
-			case 'h':
-				bze_help(argv[0]);
-				return 0;
-			case 'i':
-				sscanf(optarg, "%lu", &opts.start_bit);
-				break;
-			case 's':
-				sscanf(optarg, "%lu", &opts.seek_bytes);
-				break;
-			case 'c':
-				sscanf(optarg, "%lu", &opts.stop_bytes);
-				break;
-			case 'm':
-				opts.output_type = OUT_TAGGED;
-				break;
-			default:
-				bze_help(argv[0]);
-				return 1;
-        }
+struct bze_string_state_t {
+	uint32_t alloc_size;
+	char *string;
+};
+
+void bze_write_string_fun(void *opts, char *buf, uint64_t buf_len) {
+	struct bze_string_state_t *s = (struct bze_string_state_t *)opts;
+
+	uint32_t current_size = 0;
+	if (s->string)
+		current_size = strlen(s->string);
+
+	uint32_t nsize = s->alloc_size;
+	while ((buf_len + current_size + 1) >= nsize)
+		nsize += 64*1024;
+
+	if (nsize != s->alloc_size) {
+		s->string = realloc(s->string, nsize);
+		s->alloc_size = nsize;
+		s->string[current_size] = 0;
 	}
 
-	if (optind != (argc - 1)) {
-		bze_help(argv[0]);
-		return 1;
-	};
+	strncat(s->string, buf, buf_len); /* txt isn't zero terminated */
 
-	opts.fn =  argv[optind];
-	fprintf(stderr, "Starting %s with bit=%lu, seek=%lu, count=%lu\n", opts.fn,
-		opts.start_bit, opts.seek_bytes, opts.stop_bytes);
+	s->string = s->string;
+	return;
+}
 
-	return bze_extract_data(&opts);
+
+char *bze_extract_string(char *fn, uint64_t bit, uint64_t seek, uint64_t count) {
+	struct bze_string_state_t state;
+	state.string = NULL;
+	state.alloc_size = 0;
+
+	struct bze_options_t opts;
+
+	opts.fn = fn;
+	opts.start_bit = bit;
+	opts.seek_bytes = seek;
+	opts.stop_bytes = count;
+	opts.output_type = OUT_SIMPLE;
+	opts.write_opts = &state;
+	opts.write_fun= bze_write_string_fun;
+	bze_extract_data(&opts);
+
+	return state.string;
 }

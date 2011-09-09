@@ -3,11 +3,15 @@ CPPFLAGS=-Wall -ggdb
 
 LIBS=-lbz2 -lexpat -lstdc++ -lxapian
 
-bzextract: bzextract.o bzpartial.o
+.PHONY: default clean
+
+default: bzmain wkmain
+
+bzmain: bzmain.o bzextract.o bzpartial.o
 	gcc $^ -o $@ $(LIBS)
 
-wkmain: bzpartial.o wkparse.o wkmain.o wkindex.o
+wkmain: bzpartial.o wkparse.o wkmain.o wkindex.o bzextract.o
 	gcc $^ -o $@ $(LIBS)
 
 clean:
-	rm -f *.o a.out main bzextract wkmain
+	rm -f *.o a.out main bzmain wkmain

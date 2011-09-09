@@ -31,7 +31,11 @@ struct bze_options_t {
 	}	output_type;
 
 	int printing_opts;
+	void (*write_fun)(void *, char *, uint64_t);
+	void *write_opts;
 };
 
 int bze_extract_data(struct bze_options_t *opts);
+char *bze_extract_string(char *fn, uint64_t bit, uint64_t seek, uint64_t count);
+void bze_write_stdout_fun(void *opts, char *buf, uint64_t buf_len);
 #endif
