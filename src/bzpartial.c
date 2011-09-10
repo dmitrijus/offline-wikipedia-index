@@ -9,10 +9,11 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
 #include <bzlib.h>
 
 //                          76543210 // 16mb (-1 must result in a mask, max = 2gb/8)
-#define MMAP_SIZE 0x0000000000100000ULL
+#define MMAP_SIZE 0x0000000000001000ULL
 
 #define BZ_START_MAGIC 0x0000314159265359ULL
 #define BZ_START_MASK  0x0000FFFFFFFFFFFFULL
@@ -90,11 +91,11 @@ void buffer_close(struct buffer_t *buf) {
 	close(buf->fd);
 }
 
-int buffer_read_bit(struct buffer_t *buf) {
+int inline buffer_read_bit(struct buffer_t *buf) {
 	if (buf->eof)
 		return -1;
 
-    int bit = (buf->bit & 0x7);
+    int bit = buf->bit & 0x7;
     bit = 7 - bit; // big endianness
 
     int ret = (buf->map[buf->bit >> 3] >> bit) & 0x1;
@@ -120,47 +121,97 @@ void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
     buffer_reopen(buf);
 }
 
-/*
-uint64_t buffer_transfer_bits_slow(struct buffer_t *buf, uint64_t size, char *dst) {
-    uint64_t pos = 0;
-    uint64_t total = size >> 8;
+/* actions for anon buffer */
+void abuffer_init(struct abuffer_t *buf) {
+	buf->size = PART_BUF_SIZE;
+	buf->bit = 0;
 
-    if (size & 0x7)
-        total++;
-
-    memset(dst, 0, total);
-
-    while (pos < size) {
-        int bit = buffer_read_bit(buf);
-        dst[pos >> 3] |= (bit << (7 - (pos & 0x7)));
-
-        pos++;
+    char *ret = mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ret == NULL) {
+        perror("Error mmap'ing file:");
+        exit(EXIT_FAILURE);
     }
 
-    return size;
+	buf->map = ret;
 }
 
-uint64_t buffer_transfer_bits2(struct buffer_t *buf, uint64_t size, char *dst) {
-	return 0;
+void abuffer_close(struct abuffer_t *buf) {
+    munmap(buf->map, buf->size);
+}
 
-	if (size < 16)
-		return buffer_transfer_bits_slow(buf, size, dst);
+void inline abuffer_put_bit(struct abuffer_t *buf, char bit) {
+	buf->map[buf->bit >> 3] &= ~(1  << (7 - (buf->bit & 0x7)));
+	buf->map[buf->bit >> 3] |= (bit << (7 - (buf->bit & 0x7)));
 
-	// filling the buffer till we hit byte boundary for 
-	char orig_pad = 8 - (buf->bit & 0x7);
-	if (orig_pad == 8) orig_pad = 0;
+	buf->bit++;
+}
 
-	size -= orig_pad;
-	buffer_transfer_bits_slow(buf, orig_pad, dst);
-	dst += orig_pad;
+void abuffer_put_bytes(struct abuffer_t *buf, const char *bytes, uint32_t len) {
+	while (len > 0) {
+		for (int i = 7; i >= 0; --i)
+			abuffer_put_bit(buf, (bytes[0] >> i) & 0x1);
 
-	// ensure buffer has at least 1mb (size / 8) of space ahead
+		--len;
+		bytes++;
+	}
+}
 
-	// starting fast copy
-	char out_pad = 8 - (size & 0x7);
-	if (out_pad == 8) out_pad = 0;
+void buffer_transfer_bytes_aligned(struct buffer_t *buf, char *dest, uint32_t len) {
+	assert(!(buf->bit & 0x7));
 
-} */
+	uint32_t limit = buf->act_size - (buf->bit >> 3);
+
+	if (limit > len) {
+		memcpy(dest, buf->map + (buf->bit >> 3), len);
+
+		buf->bit += len << 3;
+		return;
+	} else {
+		memcpy(dest, buf->map + (buf->bit >> 3), limit);
+
+		dest += limit;
+		len -= limit;
+
+		buffer_seek_bits(buf, (buf->offset << 3) + buf->bit + (limit << 3));
+		if (len)
+			return buffer_transfer_bytes_aligned(buf, dest, len);
+	}
+}
+
+void abuffer_transfer_bits(struct buffer_t *buf, struct abuffer_t *dest, uint32_t len) {
+	while ((len > 0) && (buf->bit & 0x7)) {
+		char bit = buffer_read_bit(buf);
+		abuffer_put_bit(dest, bit);
+		--len;
+	}
+
+	// input is now byte alligned
+	// calculate the output offset
+	char out_pad = (8 - (dest->bit & 0x7)) & 0x7;
+	
+	char *out_start = dest->map + ((dest->bit + out_pad) >> 3);
+	uint32_t out_len = len >> 3;
+
+	buffer_transfer_bytes_aligned(buf, out_start, out_len);
+
+
+	// transfer them to this buffah
+	abuffer_put_bytes(dest, out_start, out_len);
+
+	// get the reminder
+	len = len & 0x7;
+	while (len > 0) {
+		char bit = buffer_read_bit(buf);
+		abuffer_put_bit(dest, bit);
+		--len;
+	}
+}
+
+void abuffer_pad8(struct abuffer_t *buf) {
+	while (buf->bit & 0x7) {
+		abuffer_put_bit(buf, 0);
+	}
+}
 
 /*
  * Find part in a stream, return it's relative position and size
@@ -218,79 +269,10 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
     return 0;
 }
 
-/* actions for anon buffer */
-void abuffer_init(struct abuffer_t *buf) {
-	buf->size = PART_BUF_SIZE;
-	buf->bit = 0;
-
-    char *ret = mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ret == NULL) {
-        perror("Error mmap'ing file:");
-        exit(EXIT_FAILURE);
-    }
-
-	buf->map = ret;
-}
-
-void abuffer_close(struct abuffer_t *buf) {
-    munmap(buf->map, buf->size);
-}
-
-void abuffer_put_bit(struct abuffer_t *buf, char bit) {
-	buf->map[buf->bit >> 3] &= ~(1  << (7 - (buf->bit & 0x7)));
-	buf->map[buf->bit >> 3] |= (bit << (7 - (buf->bit & 0x7)));
-
-	buf->bit++;
-}
-
-void abuffer_put_bytes(struct abuffer_t *buf, const char *bytes, uint32_t len) {
-	while (len > 0) {
-		for (int i = 7; i >= 0; --i)
-			abuffer_put_bit(buf, (bytes[0] >> i) & 0x1);
-
-		--len;
-		bytes++;
-	}
-}
-
-void abuffer_transfer_bits_slow(struct buffer_t *buf, struct abuffer_t *dest, uint32_t len) {
-	while (len > 0) {
-		char bit = buffer_read_bit(buf);
-		abuffer_put_bit(dest, bit);
-
-		--len;
-	}
-}
-
-void abuffer_pad8(struct abuffer_t *buf) {
-	while (buf->bit & 0x7) {
-		abuffer_put_bit(buf, 0);
-	}
-}
-
-/*
-void put_byte(char *dst, uint64_t *size, char byte) {
-    char offset = (*size) & 0x7;
-    dst[(*size) / 8] |= ((unsigned char)byte >> offset);
-    dst[((*size) / 8)  + 1] |= ((unsigned char)byte << (8 - offset)) & 0xFF;
-    *size = *size + 8;
-}
-*/
-
 /*
  * Recreate partial archive for decompression, dst must be larger than 900k
  */
 uint64_t bz_recreate(struct buffer_t *buf, struct abuffer_t *dest, uint64_t p_start, uint64_t p_end) {
-	/* uint64_t buf_size = (p_end - p_start + 8) / 8;
-	buf_size = buf_size + 4 + 6 + 6 + 4 + 1;
-
-	if (dst_len <= buf_size) {
-		fprintf(stderr, "Buffer size is too small to hold bz2 part");
-		exit(EXIT_FAILURE);
-	}
-
-	*/
-
     buffer_seek_bits(buf, p_start);
 
     /* recreate the header */
@@ -337,6 +319,8 @@ uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t 
 		fprintf(stderr, "BZip2 read error: %d\n", ret);
         exit(EXIT_FAILURE);
     }
+
+	abuffer_close(&dest);
 
 	*offset = p_end;
 	free(part_buf);

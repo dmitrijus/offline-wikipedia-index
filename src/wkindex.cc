@@ -171,7 +171,17 @@ void WikiIndex::add_article(struct wk_page_entry_t *page) {
 	Xapian::Document doc;
 	doc.set_data(string(page->id));
 
+	char buf[128];;
 	doc.add_value(1, string(page->fn));
+
+	sprintf(buf, "%lu", page->bit_offset);
+	doc.add_value(2, string(buf));
+	sprintf(buf, "%lu", page->byte_offset);
+	doc.add_value(3, string(buf));
+	sprintf(buf, "%lu", page->byte_count);
+	doc.add_value(4, string(buf));
+
+
 	doc.add_value(10, string(page->title));
 
 	string title = page->title;
