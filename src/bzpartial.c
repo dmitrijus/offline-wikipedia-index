@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <bzlib.h>
 
-//                          76543210 // 16mb (-1 must result in a mask)
+//                          76543210 // 16mb (-1 must result in a mask, max = 2gb/8)
 #define MMAP_SIZE 0x0000000000100000ULL
 
 #define BZ_START_MAGIC 0x0000314159265359ULL
@@ -53,34 +53,9 @@ void buffer_open(struct buffer_t *buf, char *fn, char *mode) {
     buffer_reopen(buf);
 }
 
-void buffer_open_anon(struct buffer_t *buf) {
-    buf->offset = 0;
-    buf->bit = 0;
-    buf->map = NULL;
-	buf->fn = NULL;
-	buf->offset = 0;
-	buf->size = PART_BUF_SIZE;
-	buf->map_size = PART_BUF_SIZE;
-	buf->map_offset = 0;
-
-    char *ret = mmap(0, PART_BUF_SIZE, PROT_READ, MAP_ANONYMOUS, -1, 0);
-    if (ret == NULL) {
-        perror("Error mmap'ing file:");
-        exit(EXIT_FAILURE);
-    }
-
-	buf->map = ret;
-}
-
 void buffer_reopen(struct buffer_t *buf) {
     if ((buf->map_offset == buf->offset) && (buf->map))
         return;
-
-	if (!buf->fn) {
-		fprintf(stderr, "reopen in anonymous\n");
-		exit(EXIT_FAILURE);
-		return;
-	};
 
 	// check for eof
 	if ((buf->offset + (buf->bit >> 3)) >= buf->size) {
@@ -112,10 +87,7 @@ void buffer_reopen(struct buffer_t *buf) {
 
 void buffer_close(struct buffer_t *buf) {
     munmap(buf->map, buf->map_size);
-
-	if (buf->fd) {
-	    close(buf->fd);
-	}
+	close(buf->fd);
 }
 
 int buffer_read_bit(struct buffer_t *buf) {
@@ -138,7 +110,6 @@ int buffer_read_bit(struct buffer_t *buf) {
 	return ret;
 }
 
-
 void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
 	uint64_t bytes_from_offset = (bits >> 3) & (buf->map_size - 1);
 
@@ -149,6 +120,7 @@ void buffer_seek_bits(struct buffer_t *buf, uint64_t bits) {
     buffer_reopen(buf);
 }
 
+/*
 uint64_t buffer_transfer_bits_slow(struct buffer_t *buf, uint64_t size, char *dst) {
     uint64_t pos = 0;
     uint64_t total = size >> 8;
@@ -188,8 +160,7 @@ uint64_t buffer_transfer_bits2(struct buffer_t *buf, uint64_t size, char *dst) {
 	char out_pad = 8 - (size & 0x7);
 	if (out_pad == 8) out_pad = 0;
 
-}
-
+} */
 
 /*
  * Find part in a stream, return it's relative position and size
@@ -247,18 +218,70 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
     return 0;
 }
 
+/* actions for anon buffer */
+void abuffer_init(struct abuffer_t *buf) {
+	buf->size = PART_BUF_SIZE;
+	buf->bit = 0;
+
+    char *ret = mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ret == NULL) {
+        perror("Error mmap'ing file:");
+        exit(EXIT_FAILURE);
+    }
+
+	buf->map = ret;
+}
+
+void abuffer_close(struct abuffer_t *buf) {
+    munmap(buf->map, buf->size);
+}
+
+void abuffer_put_bit(struct abuffer_t *buf, char bit) {
+	buf->map[buf->bit >> 3] &= ~(1  << (7 - (buf->bit & 0x7)));
+	buf->map[buf->bit >> 3] |= (bit << (7 - (buf->bit & 0x7)));
+
+	buf->bit++;
+}
+
+void abuffer_put_bytes(struct abuffer_t *buf, const char *bytes, uint32_t len) {
+	while (len > 0) {
+		for (int i = 7; i >= 0; --i)
+			abuffer_put_bit(buf, (bytes[0] >> i) & 0x1);
+
+		--len;
+		bytes++;
+	}
+}
+
+void abuffer_transfer_bits_slow(struct buffer_t *buf, struct abuffer_t *dest, uint32_t len) {
+	while (len > 0) {
+		char bit = buffer_read_bit(buf);
+		abuffer_put_bit(dest, bit);
+
+		--len;
+	}
+}
+
+void abuffer_pad8(struct abuffer_t *buf) {
+	while (buf->bit & 0x7) {
+		abuffer_put_bit(buf, 0);
+	}
+}
+
+/*
 void put_byte(char *dst, uint64_t *size, char byte) {
     char offset = (*size) & 0x7;
     dst[(*size) / 8] |= ((unsigned char)byte >> offset);
     dst[((*size) / 8)  + 1] |= ((unsigned char)byte << (8 - offset)) & 0xFF;
     *size = *size + 8;
 }
+*/
 
 /*
  * Recreate partial archive for decompression, dst must be larger than 900k
  */
-uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_end, char *dst, uint64_t dst_len) {
-	uint64_t buf_size = (p_end - p_start + 8) / 8;
+uint64_t bz_recreate(struct buffer_t *buf, struct abuffer_t *dest, uint64_t p_start, uint64_t p_end) {
+	/* uint64_t buf_size = (p_end - p_start + 8) / 8;
 	buf_size = buf_size + 4 + 6 + 6 + 4 + 1;
 
 	if (dst_len <= buf_size) {
@@ -266,36 +289,27 @@ uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_end, cha
 		exit(EXIT_FAILURE);
 	}
 
-    /* recreate the header */
-    uint64_t size = 0;
-    memset(dst, 0, dst_len);
-
-    memcpy(dst, buf->head, 4); /* includes the start magic */
-    size = 32;
-
-	char cm_head[6] = {0x31, 0x41, 0x59, 0x26, 0x53, 0x59};
-
-    put_byte(dst, &size, 0x31); put_byte(dst, &size, 0x41); put_byte(dst, &size, 0x59);
-    put_byte(dst, &size, 0x26); put_byte(dst, &size, 0x53); put_byte(dst, &size, 0x59);
+	*/
 
     buffer_seek_bits(buf, p_start);
-    uint64_t data_size = buffer_transfer_bits_slow(buf, p_end - p_start, dst+10);
-    size += data_size;
+
+    /* recreate the header */
+
+	const char cm_head[6] = {0x31, 0x41, 0x59, 0x26, 0x53, 0x59};
+	const char cm_tail[6] = {0x17, 0x72, 0x45, 0x38, 0x50, 0x90};
+
+	abuffer_put_bytes(dest, buf->head, 4); // includes the start magic
+	abuffer_put_bytes(dest, cm_head, 6);
+
+	abuffer_transfer_bits(buf, dest, p_end - p_start);
 
     // copy eos magic
-    put_byte(dst, &size, 0x17); put_byte(dst, &size, 0x72); put_byte(dst, &size, 0x45);
-    put_byte(dst, &size, 0x38); put_byte(dst, &size, 0x50); put_byte(dst, &size, 0x90);
+	abuffer_put_bytes(dest, cm_tail, 6);
+    // copy checksum, the same as in stream
+	abuffer_put_bytes(dest, dest->map + 10, 4);
 
-    // copy checksum
-    put_byte(dst, &size, dst[10]);
-    put_byte(dst, &size, dst[11]);
-    put_byte(dst, &size, dst[12]);
-    put_byte(dst, &size, dst[13]);
-
-    if (size & 0x7)
-        size += 8 - (size & 0x7);
-
-    return size / 8;
+    abuffer_pad8(dest);
+	return dest->bit >> 3;
 }
 
 uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t dst_len) {
@@ -308,10 +322,14 @@ uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t 
         return 0;
     }
 
-	uint64_t part_len = bz_recreate(buf, p_start, p_end, part_buf, PART_BUF_SIZE);
+	struct abuffer_t dest;
+
+	abuffer_init(&dest);
+
+	uint64_t part_len = bz_recreate(buf, &dest, p_start, p_end);
 	unsigned int dst_len_ptr = dst_len;
 
-	int ret = BZ2_bzBuffToBuffDecompress(dst, &dst_len_ptr, part_buf, part_len, 0, 0);
+	int ret = BZ2_bzBuffToBuffDecompress(dst, &dst_len_ptr, dest.map, part_len, 0, 0);
 
     if (ret == BZ_OK) {
         // fprintf(stderr, "decoded bit: %u\n", dst_len_ptr);

@@ -24,6 +24,13 @@ struct buffer_t {
 	uint64_t map_offset;
 };
 
+struct abuffer_t {
+	uint32_t bit;
+	uint32_t size;
+
+	char *map;
+};
+
 void buffer_open(struct buffer_t *buf, char *fn, char *mode);
 void buffer_close(struct buffer_t *buf);
 void buffer_reopen(struct buffer_t *);
@@ -33,7 +40,7 @@ uint64_t buffer_transfer_bits(struct buffer_t *buf, uint64_t size, char *dst);
 void buffer_seek_bits(struct buffer_t *buf, uint64_t bits);
 
 int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start, uint64_t *p_end);
-uint64_t bz_recreate(struct buffer_t *buf, uint64_t p_start, uint64_t p_stop, char *dst, uint64_t dst_len);
+uint64_t bz_recreate(struct buffer_t *buf, struct abuffer_t *dest, uint64_t p_start, uint64_t p_stop);
 uint64_t bz_dstream(struct buffer_t *buf, uint64_t *offset, char *dst, uint64_t dst_len);
 
 #endif
