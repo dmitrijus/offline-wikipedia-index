@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <getopt.h>
 #include <libgen.h>
+#include <inttypes.h>
 
 #include "bzextract.h"
 #include "wkparse.h"
@@ -63,7 +64,7 @@ void print_page_handler(struct page_info_t *pg, void *extra) {
 	p.byte_count = pg->size;
 
     char pn[1024]; pn[0] = 0;
-    snprintf(pn, 1024, "%s:%ld:%ld:%ld",
+    snprintf(pn, 1024, "%s:%"PRIu64":%"PRIu64":%"PRIu64":",
         p.fn, p.bit_offset, p.byte_offset, p.byte_count);
 
 	p.title = pg->title;
@@ -149,7 +150,7 @@ int index_file(FILE *in) {
         }
         extra.total += current_el->src.dst_size;
 
-        fprintf(stderr, "so far parsed %ld articles [%ld bytes].\n", extra.articles, extra.total);
+        fprintf(stderr, "so far parsed %"PRIu64" articles [%"PRIu64" bytes].\n", extra.articles, extra.total);
     }
 
 	while (extra.root) {

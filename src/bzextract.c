@@ -7,6 +7,7 @@
 #include <getopt.h>
 #include <assert.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include <time.h>
 
 void print_part_info(struct bze_part_t *p, uint64_t buf_size, uint64_t total, clock_t st) {
@@ -19,7 +20,7 @@ void print_part_info(struct bze_part_t *p, uint64_t buf_size, uint64_t total, cl
 	double bw = ((double)p->src_end / 8 / 1000 / 1000) / clk; 
 
 	fprintf(stderr,
-		"[%3d.%1d%%] part [%ld - %ld], uncompressed: %ld, total: %ld, bw: %.2lf mb/s\n",
+		"[%3d.%1d%%] part [%"PRIu64"- %"PRIu64"], uncompressed: %"PRIu64", total: %"PRIu64", bw: %.2lf mb/s\n",
 		pm / 10, pm % 10,
 		p->src_start, p->src_end,
 		p->dst_size, total, bw);

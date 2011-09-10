@@ -11,6 +11,8 @@
 #include <cstring>
 #include <cstdio>
 
+#include <cinttypes>
+
 #include "wkindex.h"
 
 using namespace std;
@@ -174,11 +176,13 @@ void WikiIndex::add_article(struct wk_page_entry_t *page) {
 	char buf[128];;
 	doc.add_value(1, string(page->fn));
 
-	sprintf(buf, "%lu", page->bit_offset);
+	sprintf(buf, "%"PRIu64, page->bit_offset);
 	doc.add_value(2, string(buf));
-	sprintf(buf, "%lu", page->byte_offset);
+
+	sprintf(buf, "%"PRIu64, page->byte_offset);
 	doc.add_value(3, string(buf));
-	sprintf(buf, "%lu", page->byte_count);
+
+	sprintf(buf, "%"PRIu64, page->byte_count);
 	doc.add_value(4, string(buf));
 
 

@@ -1,6 +1,10 @@
 *.o
+.*.swp
+*.so.1
+
 *.bz2
 db/
+tmp/
 main
 quickstartsearch
 src/bzmain

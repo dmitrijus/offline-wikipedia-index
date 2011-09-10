@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <bzlib.h>
+#include <inttypes.h>
 
 //                          76543210 // 16mb (-1 must result in a mask, max = 2gb/8)
 #define MMAP_SIZE 0x0000000000001000ULL
@@ -247,7 +248,7 @@ int bz_find_part(struct buffer_t *buf, uint64_t start_offset, uint64_t *p_start,
         int bit = buffer_read_bit(buf);
 
         if (bit == EOF) {
-            fprintf(stderr, "Premature eof at bit: %ld\n", bits_read);
+            fprintf(stderr, "Premature eof at bit: %"PRIu64"\n", bits_read);
             *p_end = start_offset + bits_read;
             break;
         }
