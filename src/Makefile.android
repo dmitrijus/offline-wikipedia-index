@@ -8,12 +8,17 @@ CXXFLAGS=$(TARGET) -Wall -fPIC -std=gnu++0x -I/opt/android5-ndk/include/
 
 LIBS=-L. -lbz2 -lexpat -lstdc++ -lxapian
 
-.PHONY: all clean
+.PHONY: all clean install
 
 all: libbzwiki.so.1
 
 libbzwiki.so.1: bzpartial.o wkparse.o wkmain.o wkindex.o bzextract.o
 	$(GCC) $^ -shared -Wl,-soname,libbzwiki.so.1 -o $@
+
+install: all
+	cp -a bzextract.h /opt/android5-ndk/include/
+	cp -a wkindex.h /opt/android5-ndk/include/
+	cp -a libbzwiki.so.1 /opt/android5-ndk/lib/
 
 clean:
 	make -C . clean
