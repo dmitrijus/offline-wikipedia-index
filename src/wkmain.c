@@ -232,7 +232,10 @@ int extract_xml(char *path_id) {
 //    fprintf(stderr, "give: %s:%ld:%ld:%ld:dontcare\n",
 //        fn,offset,pg_offset, pg_size);
 
-	char *out = bze_extract_string(fn, offset, pg_offset, pg_size);
+	char real_fn[1024];
+	snprintf(real_fn, 1000, "%s/%s", defaults.base_dir, fn);
+
+	char *out = bze_extract_string(real_fn, offset, pg_offset, pg_size);
 
 	fputs(out, stdout);
 
@@ -304,6 +307,9 @@ int main(int argc, char **argv) {
 				break;
 			case 'p':
 				defaults.db_path = optarg;
+				break;
+			case 'b':
+				defaults.base_dir = optarg;
 				break;
             case 'i':
                 return index_file(stdin);
